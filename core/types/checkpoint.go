@@ -4,11 +4,11 @@ package types
 import "time"
 
 // Checkpoint stores agent execution state at interrupt points for pause/resume.
-// State carries the serialized policy session so resume continues from the
-// saved step instead of replaying messages from scratch.
+// Messages carry the conversation snapshot so resume continues from the
+// saved step instead of replaying from scratch.
 //
 // Checkpoint 在中断点保存 Agent 执行状态，支持暂停/恢复。
-// State 携带序列化的策略会话，使恢复从保存的步骤继续而非从头重放。
+// Messages 携带会话快照，使恢复从保存的步骤继续而非从头重放。
 type Checkpoint struct {
 	ID              string     `json:"id"`
 	AgentName       string     `json:"agent_name"`
@@ -18,8 +18,8 @@ type Checkpoint struct {
 	EnableStreaming bool       `json:"enable_streaming,omitempty"`
 	MaxSteps        int        `json:"max_steps,omitempty"`
 	StepIndex       int        `json:"step_index,omitempty"`
-	// State is the serialized policy session snapshot (json.RawMessage).
-	// State 是序列化的策略会话快照。
+	// State is optional serialized run state for resume.
+	// State 是用于恢复的可选序列化运行状态。
 	State []byte `json:"state,omitempty"`
 	// Branch identifies the checkpoint's branch (e.g. graph resume).
 	// Branch 标识检查点所属分支（如图恢复）。

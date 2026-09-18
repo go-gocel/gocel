@@ -164,12 +164,6 @@ type StepInfo struct {
 	MaxSteps     int
 	HasToolCalls bool
 	Continue     bool
-	// PolicyState is the serializable policy session snapshot attached by
-	// the engine before OnStepEnd; checkpoint modules persist it.
-	//
-	// PolicyState 是 Engine 在 OnStepEnd 前附加的策略会话快照；
-	// 检查点模块持久化它。
-	PolicyState any
 }
 
 // ── RetryPolicy ──────────────────────────────────────────────────────────

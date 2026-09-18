@@ -11,15 +11,14 @@ import (
 // Agent is the assembled product contract of the Harness. There are two
 // kinds of Agent:
 //
-//   - Strategy agents: Policy + Engine + tools + modules, assembled by the
-//     harness builder. Prefer implementing kernel.Policy over this interface.
+//   - Strategy agents: engine + tools + modules, assembled by the harness
+//     builder (gocel/agents).
 //   - Orchestration agents: composites that delegate to child agents
 //     (router, graph, parallel, chain). They call child Agent.Run with the
 //     same Runtime.
 //
 // Agent 是 Harness 的装配产物契约。有两种 Agent：
-//   - 策略型：Policy + Engine + 工具 + 模块，由 harness 装配器组装。
-//     定义策略请实现 kernel.Policy，而非本接口。
+//   - 策略型：引擎 + 工具 + 模块，由 harness 装配器（gocel/agents）组装。
 //   - 编排型：组合子 Agent（router、graph、parallel、chain），
 //     用同一个 Runtime 调用子 Agent.Run。
 type Agent interface {

@@ -2,7 +2,6 @@ package checkpoint
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -94,10 +93,8 @@ func WithBarriers(b Barrier) AutoSaveOption {
 //
 // Semantics: a checkpoint is saved on every interval-th step (step > 0),
 // reusing one checkpoint ID so the store always holds the most recent
-// recovery point. The policy session snapshot (StepInfo.PolicyState) is
-// persisted as the checkpoint's State, so Runner.Resume continues from the
-// saved step instead of replaying messages. Pair it with a CheckpointStore
-// on the Runner (runner.WithRunnerCheckpointStore).
+// recovery point. Runner.Resume continues from the saved step. Pair it with
+// a CheckpointStore on the Runner (runner.WithRunnerCheckpointStore).
 //
 // With WithBarriers, the module additionally acts as a semantic persistence
 // barrier (DSH session-checkpoint-policy): before each selected boundary
@@ -109,8 +106,7 @@ func WithBarriers(b Barrier) AutoSaveOption {
 // StepLoop 引擎的保存逻辑：循环内核保持纯净，持久化作为横切关注点
 // 以模块表达（与 module/session 一致）。
 // 语义：每第 N 步（step > 0）保存一次，复用同一检查点 ID，存储中始终
-// 保留最新恢复点。策略会话快照（StepInfo.PolicyState）作为检查点 State
-// 持久化，使 Runner.Resume 从保存的步骤继续而非重放消息。
+// 保留最新恢复点。Runner.Resume 从保存的步骤继续。
 // 配合 Runner 上的 CheckpointStore 使用（runner.WithRunnerCheckpointStore）。
 // 启用 WithBarriers 后，模块同时充当语义持久化屏障（DSH
 // session-checkpoint-policy）：每个所选边界前保存检查点，保存失败阻断
@@ -184,39 +180,14 @@ func (m *AutoSaveModule) onToolCall(ctx context.Context, info *kernel.ToolCallIn
 }
 
 // onStepEnd saves a checkpoint every interval-th step, reusing one ID so
-// the store always keeps the most recent recovery point. The policy session
-// snapshot (if any) is persisted as the checkpoint's State, enabling resume
-// from the saved step. Save failures are non-fatal (logged).
+// the store always keeps the most recent recovery point. Save failures are
+// non-fatal (logged).
 func (m *AutoSaveModule) onStepEnd(ctx context.Context, info *kernel.StepInfo) (context.Context, *kernel.StepInfo, error) {
 	if m.store == nil || info == nil || info.StepIndex <= 0 || info.StepIndex%m.interval != 0 {
 		return ctx, info, nil
 	}
 	if err := m.saveSnapshot(ctx, info.AgentName, info.StepIndex, info.MaxSteps, info.Messages); err != nil {
 		log.Printf("[checkpoint] autosave: %v", err) // non-fatal
-	}
-	// The policy snapshot rides on the same checkpoint: load the just-saved
-	// record and attach the serialized state. Failures are non-fatal but
-	// never silent — a lost policy state (plan mode / HITL) degrades resume
-	// to a fresh session, and that must be observable.
-	if info.PolicyState != nil {
-		m.mu.Lock()
-		b, err := json.Marshal(info.PolicyState)
-		if err != nil {
-			m.mu.Unlock()
-			log.Printf("[checkpoint] policy state marshal: %v", err)
-			return ctx, info, nil
-		}
-		last, err := m.store.Load(ctx, m.lastID)
-		if err != nil {
-			m.mu.Unlock()
-			log.Printf("[checkpoint] policy state load: %v", err)
-			return ctx, info, nil
-		}
-		last.State = b
-		if err := m.store.Save(ctx, last); err != nil {
-			log.Printf("[checkpoint] policy state save: %v", err)
-		}
-		m.mu.Unlock()
 	}
 	return ctx, info, nil
 }

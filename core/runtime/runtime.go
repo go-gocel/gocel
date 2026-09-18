@@ -338,7 +338,7 @@ func (rt *Runtime) FireStepEnd(ctx context.Context, info *kernel.StepInfo) (cont
 //  1. 先 FireStepStart；若 cont=false 或 err!=nil，直接返回，
 //     不执行 body、不触发 StepEnd（一步从未开始）。
 //  2. 执行 body（引擎编排）。body 通过修改 info 回写
-//     Messages / HasToolCalls / PolicyState。
+//     Messages / HasToolCalls。
 //  3. defer 保证 StepEnd 覆盖 body 的每一条退出路径
 //     （正常返回 / 返回 error / panic）。StepEnd 读取 info 的最终字段，
 //     其 cont/err 合并进返回值。

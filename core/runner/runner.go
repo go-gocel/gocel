@@ -365,20 +365,14 @@ func WithResumeBranch(branch string) ResumeOption {
 	return func(rc *resumeConfig) { rc.branch = branch }
 }
 
-// Resume resumes execution from a saved checkpoint.
+// Resume resumes execution from a saved checkpoint: it reloads the saved
+// messages, system prompt and step budget, applies the optional WithModified*
+// overrides, and runs the agent again from the saved step. On success the
+// consumed checkpoint is deleted.
 //
-// 与"重放"不同：当 Agent 实现 kernel.Resumable 时，策略会话从检查点的
-// 序列化状态恢复，Engine 从保存的步骤继续；消息历史同时被加载。
-// 非装配型 Agent（无 Resumable）携带状态检查点恢复时显式报错（状态会被
-// 丢弃）；无状态检查点退化为携带已保存消息的新执行。
-//
-// Unlike "replay": when the Agent implements kernel.Resumable, the policy
-// session is restored from the checkpoint's serialized state and the engine
-// continues from the saved step; the message history is loaded alongside.
-// A stateful checkpoint on a non-Resumable agent fails loudly (the state
-// would be discarded); a stateless checkpoint degrades to a fresh execution
-// carrying the saved messages.
-// messages.
+// Resume 从保存的检查点恢复执行：重新加载保存的消息、系统提示词与步数
+// 预算，应用可选的 WithModified* 覆盖，并从保存步骤重新运行 Agent。
+// 成功后删除已消费的检查点。
 func (r *Runner) Resume(ctx context.Context, checkpointID string, opts ...ResumeOption) (*RunInfo, error) {
 	if r.checkpointStore == nil {
 		return nil, fmt.Errorf("runner: no checkpoint store configured")
