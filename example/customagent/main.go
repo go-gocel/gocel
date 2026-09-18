@@ -25,6 +25,11 @@ import (
 	"github.com/go-gocel/gocel/core/types"
 	"github.com/go-gocel/gocel/llm"
 	"github.com/go-gocel/gocel/module/audit"
+	"github.com/go-gocel/gocel/module/guard"
+	"github.com/go-gocel/gocel/module/memory"
+	"github.com/go-gocel/gocel/module/msgcheck"
+	"github.com/go-gocel/gocel/module/repeattool"
+	"github.com/go-gocel/gocel/module/timecontext"
 )
 
 // translatorAgent 是手写的 Agent：自己构建消息、自己决定调用策略。
@@ -92,8 +97,14 @@ func run() error {
 	}
 
 	// 自定义 Agent 不需要 agents 装配器，模块在 Runner 层挂载即可。
+	// 全部工具与全部模块的完整装配见 example/reactagent。
 	r := runner.NewRunner(agent, model,
-		runner.WithModule(audit.New()), // 审计轨迹默认写到 stderr
+		runner.WithModule(timecontext.New()),       // 注入当前时间
+		runner.WithModule(guard.NewGuardModule()),  // 上下文窗口裁剪
+		runner.WithModule(repeattool.New()),        // 重复工具调用提醒
+		runner.WithModule(msgcheck.New()),          // 模型调用前消息校验
+		runner.WithModule(memory.NewMemoryModule()),// 跨步记忆
+		runner.WithModule(audit.New()),             // 审计轨迹默认写到 stderr
 	)
 
 	prompt := "把这句话翻译成英文：优雅的软件源于纪律。"
