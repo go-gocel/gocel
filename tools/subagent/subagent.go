@@ -1,9 +1,11 @@
 // Package subagent exposes the subagent registry to the model: the
 // subagent / subagent_fork tools spawn background child sessions whose
 // agent is built by the injected factory (the sole creator, mirroring the
-// DSH registry semantics), running on the parent's runtime (model + tools).
-// Spawning returns immediately with the child's handle; settlement arrives
-// later as an EventNotice through the parent's event stream.
+// DSH registry semantics), running on the parent's runtime (model + tools);
+// send_message / interrupt_agent / list_agents then control the live
+// children. Spawning returns immediately with the child's handle; settlement
+// arrives later as an EventNotice through the parent's event stream. Every
+// tool in the set operates on the one registry the Config carries.
 package subagent
 
 import (
@@ -67,8 +69,12 @@ func DepthFrom(ctx context.Context) int {
 	return 0
 }
 
-// Tools builds subagent and subagent_fork.
-// Tools 构建 subagent 与 subagent_fork 两个工具。
+// Tools builds the delegation tool set: subagent and subagent_fork spawn
+// children, send_message / interrupt_agent / list_agents control them
+// afterwards. All five share the Config's single registry.
+// Tools 构建委派工具集：subagent 与 subagent_fork 负责派发，
+// send_message / interrupt_agent / list_agents 负责后续控制，五者共用
+// Config 的同一份注册表。
 func Tools(cfg Config) ([]kernel.Tool, error) {
 	if cfg.Registry == nil {
 		return nil, fmt.Errorf("subagent tools: nil registry")
@@ -99,7 +105,35 @@ func Tools(cfg Config) ([]kernel.Tool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []kernel.Tool{spawn, fork}, nil
+	send, err := tool.ToolFromFunc(
+		c.sendMessage,
+		tool.WithToolName("send_message"),
+		tool.WithToolDescription("Send a follow-up message to a live background subagent. The message runs after the child's current turn finishes; use interrupt_agent to stop the current turn."),
+		tool.WithArgNames("id", "message"),
+		tool.WithArgDescs("The subagent id", "The follow-up message"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	interrupt, err := tool.ToolFromFunc(
+		c.interrupt,
+		tool.WithToolName("interrupt_agent"),
+		tool.WithToolDescription("Stop a background subagent's CURRENT turn only — the child stays alive and continuable via send_message."),
+		tool.WithArgNames("id"),
+		tool.WithArgDescs("The subagent id"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	list, err := tool.ToolFromFunc(
+		c.list,
+		tool.WithToolName("list_agents"),
+		tool.WithToolDescription("List the live background subagents (id, label, parent, status)."),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return []kernel.Tool{spawn, fork, send, interrupt, list}, nil
 }
 
 // spawnArgs is the argument set of subagent/subagent_fork: task is
@@ -170,5 +204,28 @@ func (c *client) start(ctx context.Context, label string, msgs []*types.Message)
 		return "", err
 	}
 	b, _ := json.Marshal(sub)
+	return string(b), nil
+}
+
+func (c *client) sendMessage(_ context.Context, id, message string) (string, error) {
+	if err := c.cfg.Registry.Continue(context.Background(), id, message); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`{"queued":true,"id":%q}`, id), nil
+}
+
+func (c *client) interrupt(_ context.Context, id string) (string, error) {
+	if err := c.cfg.Registry.Interrupt(context.Background(), id); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`{"interrupted":true,"id":%q}`, id), nil
+}
+
+func (c *client) list(_ context.Context) (string, error) {
+	subs := c.cfg.Registry.List(context.Background())
+	b, err := json.Marshal(subs)
+	if err != nil {
+		return "", err
+	}
 	return string(b), nil
 }

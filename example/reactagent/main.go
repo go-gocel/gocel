@@ -3,7 +3,7 @@
 //
 // 装配分两层：
 //  1. 工具：tools/* 每个包都接进来。零依赖的用 AllTools()；需要依赖的
-//     （goal/jobs/skill/subagent/subagent_control/workflow/shell 后台任务）
+//     （goal/jobs/skill/subagent/workflow/shell 后台任务）
 //     在 assembly 里共享同一份 manager / registry / task runner。
 //  2. 模块：module/* 里实现 kernel.Module 的全部挂到 agents.WithModules。
 //
@@ -28,7 +28,6 @@ import (
 	coregoal "github.com/go-gocel/gocel/core/goal"
 	corejobs "github.com/go-gocel/gocel/core/jobs"
 	"github.com/go-gocel/gocel/core/kernel"
-	"github.com/go-gocel/gocel/core/orchestrate"
 	"github.com/go-gocel/gocel/core/runner"
 	coresession "github.com/go-gocel/gocel/core/session"
 	skillcore "github.com/go-gocel/gocel/core/skill"
@@ -60,8 +59,6 @@ import (
 	scanstructure "github.com/go-gocel/gocel/tools/scan_structure"
 	shelltool "github.com/go-gocel/gocel/tools/shell"
 	skilltool "github.com/go-gocel/gocel/tools/skill"
-	subagenttool "github.com/go-gocel/gocel/tools/subagent"
-	subagentcontrol "github.com/go-gocel/gocel/tools/subagent_control"
 	todotool "github.com/go-gocel/gocel/tools/todo"
 	trashtool "github.com/go-gocel/gocel/tools/trash"
 	webtool "github.com/go-gocel/gocel/tools/web"
@@ -146,7 +143,7 @@ type assembly struct {
 	sessionLog *coresession.Log
 	tasks      *shelltool.TaskRunner
 	goalMgr    *coregoal.Manager
-	subagents  *orchestrate.Registry
+	delegation *agents.Delegation
 	hitlModule *hitl.Module
 	shellName  string
 	shellArgs  []string
@@ -165,7 +162,7 @@ func newAssembly() *assembly {
 		sessionLog: coresession.NewLog(sessionID),
 		tasks:      tasks,
 		goalMgr:    coregoal.NewManager(coregoal.NewMemoryStore()),
-		subagents:  orchestrate.NewRegistry(),
+		delegation: delegation(),
 		shellName:  shellName,
 		shellArgs:  shellArgs,
 		skillRoot:  seedSkillsDir(),
@@ -267,22 +264,18 @@ func (a *assembly) tools() ([]kernel.Tool, error) {
 	}
 	tools = append(tools, skillTools...)
 
-	// 子代理与子代理控制：共用同一个 orchestrate.Registry。
-	factory := func(context.Context) kernel.Agent { return childAgent() }
-	subTools, err := subagenttool.Tools(subagenttool.Config{Registry: a.subagents, Factory: factory})
+	// 子代理：一次委派装配同时给出子代理工厂、共享注册表与模型可见的委派工具。
+	delegationTools, err := a.delegation.Tools()
 	if err != nil {
 		return nil, err
 	}
-	tools = append(tools, subTools...)
+	tools = append(tools, delegationTools...)
 
-	subControlTools, err := subagentcontrol.Tools(subagentcontrol.Config{Registry: a.subagents})
-	if err != nil {
-		return nil, err
-	}
-	tools = append(tools, subControlTools...)
-
-	// 工作流：驱动同一套子代理机制。
-	engine, err := workflowengine.New(workflowengine.Config{Registry: a.subagents, Factory: factory})
+	// 工作流：复用同一套子代理机制（同一个注册表与工厂）。
+	engine, err := workflowengine.New(workflowengine.Config{
+		Registry: a.delegation.Registry(),
+		Factory:  a.delegation.Agent,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -375,13 +368,15 @@ func (p *permissiveFilePolicy) Check(types.FileOp, string) error { return nil }
 
 func (p *permissiveFilePolicy) SetMode(m types.PermissionMode) { p.mode = m }
 
-// childAgent 是子代理/工作流共用的子 Agent 工厂：只读工具、单轮收尾。
-func childAgent() kernel.Agent {
-	return agents.New(
-		agents.WithName("child"),
-		agents.WithSystemPrompt("你是子代理，用只读工具完成任务，然后用一句话作答。"),
-		agents.WithTools(readtool.AllTools()...),
-		agents.WithMaxSteps(3),
+// delegation 装配一次委派：子代理用只读工具、单轮收尾。
+func delegation() *agents.Delegation {
+	return agents.NewDelegation(
+		agents.WithSubAgentFactory(func(context.Context) kernel.Agent {
+			return agents.NewSubAgent(
+				agents.WithSystemPrompt("你是子代理，用只读工具完成任务，然后用一句话作答。"),
+				agents.WithTools(readtool.AllTools()...),
+			)
+		}),
 	)
 }
 
