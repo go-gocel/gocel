@@ -69,32 +69,29 @@ func (s *memCheckpointStore) has(id string) bool {
 	return ok
 }
 
-// ── resumable agents ─────────────────────────────────────────────────────
+// ── resume test agents ───────────────────────────────────────────────────
+// Resume carries messages only — none of these agents implements a
+// policy-session restore hook; they differ solely in run behavior.
 
-type restoreFailAgent struct{}
+type okRunAgent struct{}
 
-func (a *restoreFailAgent) Name() string        { return "restore-fail" }
-func (a *restoreFailAgent) Description() string { return "restore fails" }
-func (a *restoreFailAgent) Run(_ context.Context, _ *types.AgentInput, _ kernel.Runtime) *kernel.Result {
+func (a *okRunAgent) Name() string        { return "ok-run" }
+func (a *okRunAgent) Description() string { return "run succeeds" }
+func (a *okRunAgent) Run(_ context.Context, _ *types.AgentInput, _ kernel.Runtime) *kernel.Result {
 	return &kernel.Result{Content: "ran"}
 }
 
-type restoreOKAgent struct{}
+type failRunAgent struct{}
 
-func (a *restoreOKAgent) Name() string        { return "restore-ok" }
-func (a *restoreOKAgent) Description() string { return "restore works" }
-func (a *restoreOKAgent) Run(_ context.Context, _ *types.AgentInput, _ kernel.Runtime) *kernel.Result {
-	return &kernel.Result{Content: "ran"}
-}
-
-type restoreOKRunFailAgent struct{}
-
-func (a *restoreOKRunFailAgent) Name() string        { return "run-fail" }
-func (a *restoreOKRunFailAgent) Description() string { return "run fails" }
-func (a *restoreOKRunFailAgent) Run(_ context.Context, _ *types.AgentInput, _ kernel.Runtime) *kernel.Result {
+func (a *failRunAgent) Name() string        { return "fail-run" }
+func (a *failRunAgent) Description() string { return "run fails" }
+func (a *failRunAgent) Run(_ context.Context, _ *types.AgentInput, _ kernel.Runtime) *kernel.Result {
 	return &kernel.Result{Err: errors.New("boom")}
 }
 
+// resumeCP builds a stateful checkpoint (MaxSteps 5 at step 1 → 4 steps
+// remaining). State is deliberately set: the Runner carries it verbatim and
+// never replays it, so its presence must not change resume behavior.
 func resumeCP(id string) *types.Checkpoint {
 	return &types.Checkpoint{
 		ID: id, AgentName: "a", StepIndex: 1, MaxSteps: 5,
@@ -103,29 +100,13 @@ func resumeCP(id string) *types.Checkpoint {
 	}
 }
 
-// TestResume_KeepsCheckpointOnRestoreFailure is the C8 regression: the
-// checkpoint must survive a failed resume (restore error) so the user can
-// retry — it must never be consumed before the run actually succeeded.
-func TestResume_KeepsCheckpointOnRestoreFailure(t *testing.T) {
-	store := newMemCheckpointStore()
-	_ = store.Save(context.Background(), resumeCP("cp-1"))
-	r := NewRunner(&restoreFailAgent{}, &mockModel{}, WithRunnerCheckpointStore(store))
-
-	_, err := r.Resume(context.Background(), "cp-1")
-	if err == nil || !strings.Contains(err.Error(), "restore policy session") {
-		t.Fatalf("Resume = %v, want restore error", err)
-	}
-	if !store.has("cp-1") {
-		t.Fatal("checkpoint consumed on failed resume")
-	}
-}
-
-// TestResume_KeepsCheckpointOnRunFailure: a restored session whose run fails
-// keeps the checkpoint too.
+// TestResume_KeepsCheckpointOnRunFailure is the C8 regression: a resumed run
+// that fails must keep the checkpoint so the user can retry — it is consumed
+// only once the run actually succeeded.
 func TestResume_KeepsCheckpointOnRunFailure(t *testing.T) {
 	store := newMemCheckpointStore()
 	_ = store.Save(context.Background(), resumeCP("cp-2"))
-	r := NewRunner(&restoreOKRunFailAgent{}, &mockModel{}, WithRunnerCheckpointStore(store))
+	r := NewRunner(&failRunAgent{}, &mockModel{}, WithRunnerCheckpointStore(store))
 
 	if _, err := r.Resume(context.Background(), "cp-2"); err == nil {
 		t.Fatal("Resume = nil, want run error")
@@ -140,7 +121,7 @@ func TestResume_KeepsCheckpointOnRunFailure(t *testing.T) {
 func TestResume_DeletesCheckpointOnlyAfterSuccess(t *testing.T) {
 	store := newMemCheckpointStore()
 	_ = store.Save(context.Background(), resumeCP("cp-3"))
-	r := NewRunner(&restoreOKAgent{}, &mockModel{}, WithRunnerCheckpointStore(store))
+	r := NewRunner(&okRunAgent{}, &mockModel{}, WithRunnerCheckpointStore(store))
 
 	if _, err := r.Resume(context.Background(), "cp-3"); err != nil {
 		t.Fatalf("Resume = %v", err)
@@ -156,7 +137,7 @@ func TestResume_SurfacesDeleteFailure(t *testing.T) {
 	store := newMemCheckpointStore()
 	store.failDelete = true
 	_ = store.Save(context.Background(), resumeCP("cp-4"))
-	r := NewRunner(&restoreOKAgent{}, &mockModel{}, WithRunnerCheckpointStore(store))
+	r := NewRunner(&okRunAgent{}, &mockModel{}, WithRunnerCheckpointStore(store))
 
 	_, err := r.Resume(context.Background(), "cp-4")
 	if err == nil || !strings.Contains(err.Error(), "delete") {
@@ -169,7 +150,7 @@ func TestResume_SurfacesDeleteFailure(t *testing.T) {
 func TestResume_DeliversTerminalEvents(t *testing.T) {
 	store := newMemCheckpointStore()
 	_ = store.Save(context.Background(), resumeCP("cp-5"))
-	r := NewRunner(&restoreOKAgent{}, &mockModel{}, WithRunnerCheckpointStore(store))
+	r := NewRunner(&okRunAgent{}, &mockModel{}, WithRunnerCheckpointStore(store))
 
 	var mu sync.Mutex
 	var seen []types.EventType
@@ -195,5 +176,70 @@ func TestResume_DeliversTerminalEvents(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("events = %v, want EventFinish", seen)
+	}
+}
+
+// ── resume gap cases ─────────────────────────────────────────────────────
+
+// plainAgent is NOT resumable: it only implements kernel.Agent. It records
+// the input it was handed so resume tests can observe what the Runner carried.
+type plainAgent struct{ lastInput *types.AgentInput }
+
+func (a *plainAgent) Name() string        { return "plain" }
+func (a *plainAgent) Description() string { return "" }
+func (a *plainAgent) Run(_ context.Context, input *types.AgentInput, _ kernel.Runtime) *kernel.Result {
+	a.lastInput = input
+	return &kernel.Result{Content: "ran"}
+}
+
+// TestResume_MissingCheckpoint (D3): resuming an unknown id surfaces the
+// store's not-found error instead of pretending success.
+func TestResume_MissingCheckpoint(t *testing.T) {
+	store := newMemCheckpointStore()
+	r := NewRunner(&plainAgent{}, nil, WithRunnerCheckpointStore(store))
+
+	_, err := r.Resume(context.Background(), "nope")
+	if !errors.Is(err, kernel.ErrCheckpointNotFound) {
+		t.Fatalf("Resume(unknown) = %v, want ErrCheckpointNotFound", err)
+	}
+}
+
+// TestResume_CarriesMessagesNotState (D3): resume is message-carrying, not
+// session-restoring — the checkpoint's State is never replayed, so a stateful
+// checkpoint resumes exactly like a stateless one on a plain agent. What is
+// carried: the saved messages, the system prompt and the remaining step budget.
+func TestResume_CarriesMessagesNotState(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state []byte
+	}{
+		{name: "stateful", state: []byte(`{"v":1}`)},
+		{name: "stateless", state: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemCheckpointStore()
+			cp := resumeCP("cp-" + tc.name)
+			cp.State = tc.state
+			if err := store.Save(context.Background(), cp); err != nil {
+				t.Fatal(err)
+			}
+			agent := &plainAgent{}
+			r := NewRunner(agent, nil, WithRunnerCheckpointStore(store))
+
+			info, err := r.Resume(context.Background(), cp.ID)
+			if err != nil {
+				t.Fatalf("Resume = %v, want success", err)
+			}
+			if info == nil || info.Result == nil || info.Result.Content != "ran" {
+				t.Fatalf("info = %+v", info)
+			}
+			if agent.lastInput == nil || len(agent.lastInput.Messages) != 1 ||
+				agent.lastInput.Messages[0].Content != "hi" {
+				t.Fatalf("resumed input = %+v, want the checkpoint's 1 message", agent.lastInput)
+			}
+			if agent.lastInput.MaxSteps != 4 {
+				t.Fatalf("MaxSteps = %d, want 4 (5 - 1 saved step)", agent.lastInput.MaxSteps)
+			}
+		})
 	}
 }

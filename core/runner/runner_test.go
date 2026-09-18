@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-gocel/gocel/core/kernel"
+	"github.com/go-gocel/gocel/core/runtime"
 	"github.com/go-gocel/gocel/core/tool"
 	"github.com/go-gocel/gocel/core/types"
 )
@@ -543,5 +544,69 @@ func TestRunner_HookAfterAgentRun_AgentErrorTakesPriority(t *testing.T) {
 	// The agent error (context canceled) should take priority, not the hook error
 	if info.Err.Error() == "hook after agent run error" {
 		t.Errorf("expected agent error to take priority over hook error, got hook error")
+	}
+}
+
+// ── Runner wiring & robustness ───────────────────────────────────────────
+
+// fakeAgent records the input/context it received so tests can observe
+// runner wiring.
+type fakeAgent struct {
+	name      string
+	lastInput *types.AgentInput
+	lastState kernel.StateManager
+}
+
+func (a *fakeAgent) Name() string        { return a.name }
+func (a *fakeAgent) Description() string { return "fake" }
+func (a *fakeAgent) Run(ctx context.Context, input *types.AgentInput, rt kernel.Runtime) *kernel.Result {
+	a.lastInput = input
+	if ac := kernel.GetAgentContext(ctx); ac != nil {
+		a.lastState = ac.State()
+	}
+	return &kernel.Result{Content: "done", Messages: input.Messages}
+}
+
+// TestRunner_AgentContextStateIsRuntimeState: the AgentContext must expose
+// the Runtime's shared state — the contract's single source of truth (C2).
+func TestRunner_AgentContextStateIsRuntimeState(t *testing.T) {
+	sm := runtime.NewInMemoryState()
+	fa := &fakeAgent{name: "a"}
+	r := NewRunner(fa, nil, WithStateManager(sm))
+
+	info := r.Run(context.Background(), &types.AgentInput{Messages: []*types.Message{types.NewUserMessage("hi")}})
+	if info.Err != nil {
+		t.Fatalf("Run: %v", info.Err)
+	}
+	if fa.lastState == nil {
+		t.Fatalf("agent saw no AgentContext state")
+	}
+	if fa.lastState != sm {
+		t.Fatalf("AgentContext.State() is not the Runtime's state manager")
+	}
+}
+
+// panicAgent panics inside Run.
+type panicAgent struct{ name string }
+
+func (a *panicAgent) Name() string        { return a.name }
+func (a *panicAgent) Description() string { return "panics" }
+func (a *panicAgent) Run(context.Context, *types.AgentInput, kernel.Runtime) *kernel.Result {
+	panic("agent bug")
+}
+
+// TestRunner_AgentPanicBecomesResult: a panicking agent must surface as an
+// error result (AgentEnd hooks still fire), never crash the process (C3).
+func TestRunner_AgentPanicBecomesResult(t *testing.T) {
+	r := NewRunner(&panicAgent{name: "p"}, nil)
+	info := r.Run(context.Background(), &types.AgentInput{Messages: []*types.Message{types.NewUserMessage("hi")}})
+	if info.Err == nil {
+		t.Fatal("panicking agent = nil error, want a panic error result")
+	}
+	if !strings.Contains(info.Err.Error(), "panicked") {
+		t.Fatalf("error = %v, want panic marker", info.Err)
+	}
+	if info.Result == nil || info.Result.Reason != kernel.TerminateError {
+		t.Fatalf("result = %+v, want TerminateError", info.Result)
 	}
 }
